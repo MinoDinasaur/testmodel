@@ -1,0 +1,91 @@
+import os
+import time
+import psutil
+import cv2
+import numpy as np
+import onnxruntime
+import matplotlib.pyplot as plt
+import pandas as pd
+
+def preprocess(img_path, input_size=(640, 640)):
+    img = cv2.imread(img_path)
+    img = cv2.resize(img, input_size)
+    img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, HWC to CHW
+    img = np.expand_dims(img, axis=0).astype(np.float32) / 255.0
+    return img
+
+def run_onnx_and_monitor_ram(onnx_path, image_dir):
+    session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+
+    VALID_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+    images = sorted([
+        os.path.join(image_dir, f)
+        for f in os.listdir(image_dir)
+        if f.lower().endswith(VALID_EXTS)
+    ])
+
+    print(f"[✓] Running ONNX model: {onnx_path} on {len(images)} images")
+
+    proc = psutil.Process(os.getpid())
+    ram_usage = []
+    timestamps = []
+    processing_times = []
+    image_names = []
+
+    start_time = time.time()
+
+    for i, img_path in enumerate(images):
+        img_input = preprocess(img_path)
+        t0 = time.time()
+        _ = session.run(None, {input_name: img_input})
+        t1 = time.time()
+
+        duration = t1 - t0
+        current_ram = proc.memory_info().rss / (1024 * 1024)
+        current_timestamp = t1 - start_time
+
+        processing_times.append(duration)
+        ram_usage.append(current_ram)
+        timestamps.append(current_timestamp)
+        image_names.append(os.path.basename(img_path))
+
+        print(f"Image {i+1}/{len(images)} - Time: {duration:.3f}s - RAM: {current_ram:.2f} MB")
+
+    total_time = time.time() - start_time
+    fps = len(images) / total_time
+    peak_ram = max(ram_usage)
+
+    print(f"\n[✓] Done.")
+    print(f"Peak RAM: {peak_ram:.2f} MB")
+    print(f"FPS: {fps:.2f}")
+    print(f"Total Time: {total_time:.2f} seconds")
+
+    # Vẽ biểu đồ RAM
+    plt.figure(figsize=(10, 5))
+    plt.plot(timestamps, ram_usage, label="RAM (MB)", color='blue')
+    plt.xlabel("Thời gian (s)")
+    plt.ylabel("RAM sử dụng (MB)")
+    plt.title(f"RAM Usage theo thời gian – {os.path.basename(onnx_path)}")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plot_name = f"ram_plot_{os.path.basename(onnx_path).replace('.onnx','')}_onnx.png"
+    plt.savefig(plot_name)
+    plt.show()
+
+    # Lưu bảng dữ liệu
+    df = pd.DataFrame({
+        "image_name": image_names,
+        "processing_time_s": processing_times,
+        "timestamp_s": timestamps,
+        "ram_MB": ram_usage
+    })
+    csv_name = f"ram_data_{os.path.basename(onnx_path).replace('.onnx','')}_onnx.csv"
+    df.to_csv(csv_name, index=False)
+    print(f"[✓] Dữ liệu chi tiết đã lưu tại: {csv_name}")
+
+if __name__ == "__main__":
+    onnx_path = "v9/bestv9.onnx"
+    image_dir = "input"
+    run_onnx_and_monitor_ram(onnx_path, image_dir)
